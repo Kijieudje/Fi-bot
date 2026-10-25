@@ -1,6 +1,4 @@
 import asyncio
-import json
-import os
 import re
 import sqlite3
 from datetime import datetime
@@ -8,12 +6,11 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import FSInputFile, KeyboardButton, ReplyKeyboardMarkup
 
 # ================= НАСТРОЙКИ =================
 TOKEN = os.getenv("BOT_TOKEN", "8835340952:AAGKvYplGHylAdVfGzO-KVRpnWMR7KsvI-M")
 DB_NAME = "finance.db"
-BACKUP_HEADER = "📦 АВТОБЭКАП КАССЫ"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -33,12 +30,6 @@ def init_db():
                 date_str TEXT,     -- YYYY-MM-DD
                 month_str TEXT,    -- YYYY-MM
                 time_str TEXT      -- HH:MM
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS meta (
-                user_id INTEGER PRIMARY KEY,
-                pin_msg_id INTEGER
             )
         """)
         conn.commit()
@@ -65,81 +56,6 @@ def delete_last_record(user_id: int):
             cursor.execute("DELETE FROM records WHERE id = ?", (row[0],))
             conn.commit()
         return row
-
-# ================= ПЕРСОНАЛЬНЫЙ БЭКАП В ЧАТ =================
-def export_user_backup_text(user_id: int) -> str:
-    with sqlite3.connect(DB_NAME) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id, r_type, amount, comment, breakdown, date_str, month_str, time_str FROM records WHERE user_id = ? ORDER BY id ASC", (user_id,))
-        rows = cursor.fetchall()
-
-    data_json = json.dumps(rows, ensure_ascii=False)
-    return (
-        f"<b>{BACKUP_HEADER} (ID: {user_id})</b>\n"
-        f"📅 Обновлено: {datetime.now().strftime('%d.%m.%Y %H:%M')} | Записей: {len(rows)}\n"
-        f"<i>Личный бэкап кассы этого аккаунта.</i>\n\n"
-        f"<pre>{data_json}</pre>"
-    )
-
-def import_user_backup_text(text: str, user_id: int):
-    match = re.search(r"(\[\[.*\]\]|\[\])", text, re.DOTALL)
-    if not match:
-        raise ValueError("Не найден блок данных")
-    
-    rows = json.loads(match.group(1))
-    with sqlite3.connect(DB_NAME) as conn:
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM records WHERE user_id = ?", (user_id,))
-        for r in rows:
-            cursor.execute("""
-                INSERT INTO records (user_id, r_type, amount, comment, breakdown, date_str, month_str, time_str)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (user_id, r[1], r[2], r[3], r[4], r[5], r[6], r[7]))
-        conn.commit()
-
-async def auto_restore_check(chat_id: int, user_id: int):
-    with sqlite3.connect(DB_NAME) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM records WHERE user_id = ?", (user_id,))
-        count = cursor.fetchone()[0]
-    
-    if count > 0:
-        return
-
-    try:
-        chat = await bot.get_chat(chat_id)
-        if chat.pinned_message and chat.pinned_message.text and BACKUP_HEADER in chat.pinned_message.text and str(user_id) in chat.pinned_message.text:
-            import_user_backup_text(chat.pinned_message.text, user_id)
-            print(f"Касса пользователя {user_id} автовосстановлена из закрепа!")
-    except Exception as e:
-        print(f"Не удалось автовосстановить кассу: {e}")
-
-async def sync_chat_backup(chat_id: int, user_id: int):
-    backup_html = export_user_backup_text(user_id)
-    
-    with sqlite3.connect(DB_NAME) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT pin_msg_id FROM meta WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-        pin_msg_id = int(row[0]) if row else None
-
-    if pin_msg_id:
-        try:
-            await bot.edit_message_text(text=backup_html, chat_id=chat_id, message_id=pin_msg_id, parse_mode="HTML")
-            return
-        except Exception:
-            pass
-
-    sent = await bot.send_message(chat_id=chat_id, text=backup_html, parse_mode="HTML", disable_notification=True)
-    try:
-        await bot.pin_chat_message(chat_id=chat_id, message_id=sent.message_id, disable_notification=True)
-    except Exception:
-        pass
-
-    with sqlite3.connect(DB_NAME) as conn:
-        cursor = conn.cursor()
-        cursor.execute("INSERT OR REPLACE INTO meta (user_id, pin_msg_id) VALUES (?, ?)", (user_id, sent.message_id))
-        conn.commit()
 
 # ================= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =================
 def format_money(val: float) -> str:
@@ -184,7 +100,7 @@ main_kb = ReplyKeyboardMarkup(
         [KeyboardButton(text="➕ Записать ЗП"), KeyboardButton(text="➖ Записать трату")],
         [KeyboardButton(text="📊 Сводка за день"), KeyboardButton(text="📅 Сводка за месяц")],
         [KeyboardButton(text="📈 Общая сводка"), KeyboardButton(text="↩️ Отменить последнюю")],
-        [KeyboardButton(text="💬 Бэкап в чат")]
+        [KeyboardButton(text="💾 Бэкап базы")]
     ],
     resize_keyboard=True
 )
@@ -193,19 +109,12 @@ main_kb = ReplyKeyboardMarkup(
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
-    await auto_restore_check(message.chat.id, message.from_user.id)
     await message.answer(
-        "👋 Привет! У каждого аккаунта своя личная касса.\n\n"
+        "👋 Привет! У каждого аккаунта своя независимая личная касса.\n\n"
         "✨ Суммы можно вводить через плюс: <code>2500+3000+5000</code>",
         reply_markup=main_kb,
         parse_mode="HTML"
     )
-
-@dp.message(F.text == "💬 Бэкап в чат")
-async def btn_chat_backup(message: types.Message, state: FSMContext):
-    await state.clear()
-    await sync_chat_backup(message.chat.id, message.from_user.id)
-    await message.answer("✅ <b>Твой личный бэкап кассы обновлен!</b>", parse_mode="HTML")
 
 @dp.message(F.text == "➕ Записать ЗП")
 async def btn_income(message: types.Message, state: FSMContext):
@@ -220,21 +129,38 @@ async def btn_expense(message: types.Message, state: FSMContext):
 @dp.message(F.text == "↩️ Отменить последнюю")
 async def btn_undo(message: types.Message, state: FSMContext):
     await state.clear()
-    await auto_restore_check(message.chat.id, message.from_user.id)
     deleted = delete_last_record(message.from_user.id)
     if deleted:
         _, r_type, amount, comment = deleted
         label = "Доход" if r_type == "income" else "Расход"
-        await sync_chat_backup(message.chat.id, message.from_user.id)
         await message.answer(f"🗑 <b>Удалена последняя запись:</b>\n{label}: <b>{format_money(amount)}</b> ({comment})", parse_mode="HTML")
     else:
         await message.answer("У тебя нет записей для удаления.")
+
+# ================= БЭКАП И ВОССТАНОВЛЕНИЕ =================
+@dp.message(F.text == "💾 Бэкап базы")
+async def btn_backup(message: types.Message, state: FSMContext):
+    await state.clear()
+    if not os.path.exists(DB_NAME):
+        await message.answer("Файл базы данных пуст.")
+        return
+    backup_file = FSInputFile(DB_NAME, filename=f"finance_{message.from_user.id}.db")
+    await message.answer_document(document=backup_file, caption="💾 Твоя личная резервная копия базы")
+
+@dp.message(F.document)
+async def restore_from_file(message: types.Message, state: FSMContext):
+    await state.clear()
+    if not message.document.file_name.endswith(".db"):
+        return
+    file_info = await bot.get_file(message.document.file_id)
+    await bot.download_file(file_info.file_path, DB_NAME)
+    init_db()
+    await message.answer("✅ <b>База данных успешно загружена!</b>", parse_mode="HTML")
 
 # ================= СВОДКИ =================
 @dp.message(F.text == "📊 Сводка за день")
 async def btn_day_summary(message: types.Message, state: FSMContext):
     await state.clear()
-    await auto_restore_check(message.chat.id, message.from_user.id)
     today = datetime.now().strftime("%Y-%m-%d")
     
     with sqlite3.connect(DB_NAME) as conn:
@@ -269,7 +195,6 @@ async def btn_day_summary(message: types.Message, state: FSMContext):
 @dp.message(F.text == "📅 Сводка за месяц")
 async def btn_month_summary(message: types.Message, state: FSMContext):
     await state.clear()
-    await auto_restore_check(message.chat.id, message.from_user.id)
     current_month = datetime.now().strftime("%Y-%m")
     
     with sqlite3.connect(DB_NAME) as conn:
@@ -301,7 +226,6 @@ async def btn_month_summary(message: types.Message, state: FSMContext):
 @dp.message(F.text == "📈 Общая сводка")
 async def btn_total_summary(message: types.Message, state: FSMContext):
     await state.clear()
-    await auto_restore_check(message.chat.id, message.from_user.id)
     
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
@@ -342,7 +266,6 @@ async def process_income(message: types.Message):
     try:
         total, comment, breakdown = parse_expression(message.text)
         add_record(message.from_user.id, "income", total, comment, breakdown)
-        await sync_chat_backup(message.chat.id, message.from_user.id)
         
         calc = f" ({breakdown})" if "+" in message.text else ""
         await message.answer(f"✅ <b>ЗП записана:</b> +{format_money(total)}{calc}\n📝 <i>{comment}</i>", parse_mode="HTML")
@@ -354,7 +277,6 @@ async def process_expense(message: types.Message):
     try:
         total, comment, breakdown = parse_expression(message.text)
         add_record(message.from_user.id, "expense", total, comment, breakdown)
-        await sync_chat_backup(message.chat.id, message.from_user.id)
         
         calc = f" ({breakdown})" if "+" in message.text else ""
         await message.answer(f"✅ <b>Трата записана:</b> -{format_money(total)}{calc}\n📝 <i>{comment}</i>", parse_mode="HTML")
