@@ -33,8 +33,6 @@ def init_db():
             )
         """)
         conn.commit()
-        
-print(f"Пользователь написал, ID: {message.from_user.id}")
 
 def add_record(user_id: int, r_type: str, amount: float, comment: str, breakdown: str):
     now = datetime.now()
