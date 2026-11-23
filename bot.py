@@ -18,7 +18,7 @@ from aiogram.types import FSInputFile, KeyboardButton, ReplyKeyboardMarkup
 # Токен берём ТОЛЬКО из переменной окружения BOT_TOKEN (в коде его хранить нельзя)
 TOKEN = os.getenv("8835340952:AAGKvYplGHylAdVfGzO-KVRpnWMR7KsvI-M")
 if not TOKEN:
-    raise SystemExit("Не задана переменная окружения BOT_TOKEN")
+    raise SystemExit("8835340952:AAGKvYplGHylAdVfGzO-KVRpnWMR7KsvI-M")
 
 # Часовой пояс для дат и времени записей (на хостингах часто стоит UTC)
 TZ = ZoneInfo(os.getenv("BOT_TZ", "Europe/Moscow"))
